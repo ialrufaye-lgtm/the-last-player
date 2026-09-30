@@ -1,0 +1,1 @@
+{"dependencies":{"colyseus.js":"0.16.5"},"devDependencies":{"tsx":"^4.19.0"},"name":"last-player-tools","private":true,"scripts":{"bots":"tsx bot.ts"},"type":"module"}
