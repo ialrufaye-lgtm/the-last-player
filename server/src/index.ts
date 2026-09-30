@@ -12,6 +12,7 @@ import { createServer } from 'http';
 import { Server } from 'colyseus';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { LastPlayerRoom, codeToRoomId } from './room';
+import { maybeStartBots } from './bots';
 
 /** Minimal .env loader (server/.env) — no extra dependency. */
 function loadEnvFile() {
@@ -73,6 +74,7 @@ async function main() {
   });
 
   console.log(`[server] listening on :${PORT} (ws + http)`);
+  maybeStartBots(PORT);
 }
 
 main().catch((err) => {

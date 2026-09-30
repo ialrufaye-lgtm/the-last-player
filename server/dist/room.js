@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LastPlayerRoom = exports.codeToRoomId = void 0;
+exports.LastPlayerRoom = exports.activeRooms = exports.codeToRoomId = void 0;
 /**
  * last_player room — lobby -> countdown -> rounds -> podium.
  * All game logic is server-authoritative; clients only send intents.
@@ -13,6 +13,8 @@ const rounds_1 = require("./rounds");
 const usedCodes = new Set();
 /** code -> roomId registry, used by GET /api/room-by-code/:code */
 exports.codeToRoomId = new Map();
+/** roomId -> room instance registry, used by the in-server bot supervisor. */
+exports.activeRooms = new Map();
 const LOBBY_PHASES = new Set(['lobby', 'countdown']);
 const ROUND_ORDER = ['quiz_race', 'hide_seek', 'react_race', 'survival', 'final_duel'];
 function createController(type, api, roundIndex) {
@@ -34,6 +36,10 @@ class LastPlayerRoom extends colyseus_1.Room {
         this.spam = new Map(); // sessionId -> msg timestamps (1s window)
         this.matchRunning = false;
         this.minPlayers = 10;
+        /** True once someone joins with a room code: bots stay out of private rooms. */
+        this.isPrivateRoom = false;
+        /** sessionIds of AI bots (joined with { bot: true }). Never persisted. */
+        this.botIds = new Set();
     }
     get strings() {
         return this.content.strings;
@@ -50,6 +56,7 @@ class LastPlayerRoom extends colyseus_1.Room {
             : Number.isInteger(prodMin) && prodMin > 0 ? prodMin : 10;
         this.setState(new schema_1.GameState());
         this.state.phase = 'lobby';
+        exports.activeRooms.set(this.roomId, this);
         // Client -> server intents. All gameplay messages delegate to the active
         // round controller; anything outside a round is ignored.
         this.onMessage('start', (client) => this.guarded(client, () => this.handleStart(client)));
@@ -62,6 +69,7 @@ class LastPlayerRoom extends colyseus_1.Room {
     onDispose() {
         usedCodes.delete(this.roomCode);
         exports.codeToRoomId.delete(this.roomCode);
+        exports.activeRooms.delete(this.roomId);
         console.log(`[room ${this.roomId}] disposed`);
     }
     // ------------------------------------------------------------------ join
@@ -74,7 +82,16 @@ class LastPlayerRoom extends colyseus_1.Room {
         if (code && code !== this.roomCode) {
             throw new Error('wrong_code');
         }
+        // Joining with a room code marks the room private: it disappears from
+        // the joinOrCreate pool (bots and random players can't land in it),
+        // while code holders can still join via joinById.
+        if (code && !this.isPrivateRoom) {
+            this.isPrivateRoom = true;
+            await this.setPrivate(true);
+            console.log(`[room ${this.roomId}] marked private (code join)`);
+        }
         const name = String(options?.name ?? 'لاعب').trim().slice(0, 24) || 'لاعب';
+        const isBot = options?.bot === true;
         // Reconnecting seat (lobby/countdown only)?
         const existing = this.state.players.get(client.sessionId);
         if (existing) {
@@ -99,6 +116,8 @@ class LastPlayerRoom extends colyseus_1.Room {
         p.isHost = this.state.players.size === 0;
         p.connected = true;
         this.state.players.set(client.sessionId, p);
+        if (isBot)
+            this.botIds.add(client.sessionId);
         this.syncAliveCount();
         this.broadcastLobby();
         console.log(`[room ${this.roomId}] join ${name} (${client.sessionId}) count=${this.state.players.size}`);
@@ -116,6 +135,7 @@ class LastPlayerRoom extends colyseus_1.Room {
             catch {
                 // Seat expired.
                 this.state.players.delete(client.sessionId);
+                this.botIds.delete(client.sessionId);
                 this.spam.delete(client.sessionId);
                 if (p.isHost)
                     this.promoteHost();
@@ -189,6 +209,14 @@ class LastPlayerRoom extends colyseus_1.Room {
     alivePlayers() {
         return [...this.state.players.values()].filter((p) => p.alive);
     }
+    /** True if at least one live-connected non-bot player is in the room. */
+    hasHuman() {
+        for (const id of this.state.players.keys()) {
+            if (!this.botIds.has(id) && this.clientBySession(id))
+                return true;
+        }
+        return false;
+    }
     syncAliveCount() {
         this.state.aliveCount = this.alivePlayers().length;
     }
@@ -235,6 +263,15 @@ class LastPlayerRoom extends colyseus_1.Room {
             return;
         if (this.state.phase !== 'countdown' || this.state.players.size === 0) {
             this.state.phase = 'lobby'; // everyone left during countdown
+            return;
+        }
+        // Don't run bots-only matches: if all humans left during the countdown,
+        // fall back to lobby (room stays unlocked) so the next human finds the
+        // bots waiting instead of a locked room.
+        if (!this.hasHuman()) {
+            console.log(`[room ${this.roomId}] aborting match start (no humans left)`);
+            this.state.phase = 'lobby';
+            this.broadcastLobby();
             return;
         }
         this.matchRunning = true;

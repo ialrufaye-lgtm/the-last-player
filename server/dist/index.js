@@ -40,6 +40,7 @@ const http_1 = require("http");
 const colyseus_1 = require("colyseus");
 const ws_transport_1 = require("@colyseus/ws-transport");
 const room_1 = require("./room");
+const bots_1 = require("./bots");
 /** Minimal .env loader (server/.env) — no extra dependency. */
 function loadEnvFile() {
     const p = path.resolve(__dirname, '../.env');
@@ -93,6 +94,7 @@ async function main() {
         gameServer.listen(PORT).then(resolve).catch(reject);
     });
     console.log(`[server] listening on :${PORT} (ws + http)`);
+    (0, bots_1.maybeStartBots)(PORT);
 }
 main().catch((err) => {
     console.error('[server] fatal:', err);

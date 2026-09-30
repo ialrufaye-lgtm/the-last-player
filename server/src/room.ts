@@ -14,6 +14,8 @@ import {
 const usedCodes = new Set<string>();
 /** code -> roomId registry, used by GET /api/room-by-code/:code */
 export const codeToRoomId = new Map<string, string>();
+/** roomId -> room instance registry, used by the in-server bot supervisor. */
+export const activeRooms = new Map<string, LastPlayerRoom>();
 
 const LOBBY_PHASES = new Set(['lobby', 'countdown']);
 const ROUND_ORDER = ['quiz_race', 'hide_seek', 'react_race', 'survival', 'final_duel'] as const;
@@ -38,6 +40,10 @@ export class LastPlayerRoom extends Room<GameState> {
   private spam = new Map<string, number[]>(); // sessionId -> msg timestamps (1s window)
   private matchRunning = false;
   private minPlayers = 10;
+  /** True once someone joins with a room code: bots stay out of private rooms. */
+  public isPrivateRoom = false;
+  /** sessionIds of AI bots (joined with { bot: true }). Never persisted. */
+  private botIds = new Set<string>();
 
   private get strings() {
     return this.content.strings;
@@ -58,6 +64,7 @@ export class LastPlayerRoom extends Room<GameState> {
 
     this.setState(new GameState());
     this.state.phase = 'lobby';
+    activeRooms.set(this.roomId, this);
 
     // Client -> server intents. All gameplay messages delegate to the active
     // round controller; anything outside a round is ignored.
@@ -74,6 +81,7 @@ export class LastPlayerRoom extends Room<GameState> {
   onDispose() {
     usedCodes.delete(this.roomCode);
     codeToRoomId.delete(this.roomCode);
+    activeRooms.delete(this.roomId);
     console.log(`[room ${this.roomId}] disposed`);
   }
 
@@ -88,8 +96,17 @@ export class LastPlayerRoom extends Room<GameState> {
     if (code && code !== this.roomCode) {
       throw new Error('wrong_code');
     }
+    // Joining with a room code marks the room private: it disappears from
+    // the joinOrCreate pool (bots and random players can't land in it),
+    // while code holders can still join via joinById.
+    if (code && !this.isPrivateRoom) {
+      this.isPrivateRoom = true;
+      await this.setPrivate(true);
+      console.log(`[room ${this.roomId}] marked private (code join)`);
+    }
 
     const name = String(options?.name ?? 'لاعب').trim().slice(0, 24) || 'لاعب';
+    const isBot = options?.bot === true;
 
     // Reconnecting seat (lobby/countdown only)?
     const existing = this.state.players.get(client.sessionId);
@@ -115,6 +132,7 @@ export class LastPlayerRoom extends Room<GameState> {
     p.isHost = this.state.players.size === 0;
     p.connected = true;
     this.state.players.set(client.sessionId, p);
+    if (isBot) this.botIds.add(client.sessionId);
     this.syncAliveCount();
     this.broadcastLobby();
     console.log(`[room ${this.roomId}] join ${name} (${client.sessionId}) count=${this.state.players.size}`);
@@ -132,6 +150,7 @@ export class LastPlayerRoom extends Room<GameState> {
       } catch {
         // Seat expired.
         this.state.players.delete(client.sessionId);
+        this.botIds.delete(client.sessionId);
         this.spam.delete(client.sessionId);
         if (p.isHost) this.promoteHost();
         this.syncAliveCount();
@@ -205,6 +224,14 @@ export class LastPlayerRoom extends Room<GameState> {
     return [...this.state.players.values()].filter((p) => p.alive);
   }
 
+  /** True if at least one live-connected non-bot player is in the room. */
+  private hasHuman(): boolean {
+    for (const id of this.state.players.keys()) {
+      if (!this.botIds.has(id) && this.clientBySession(id)) return true;
+    }
+    return false;
+  }
+
   private syncAliveCount() {
     this.state.aliveCount = this.alivePlayers().length;
   }
@@ -251,6 +278,15 @@ export class LastPlayerRoom extends Room<GameState> {
     if (this.matchRunning) return;
     if (this.state.phase !== 'countdown' || this.state.players.size === 0) {
       this.state.phase = 'lobby'; // everyone left during countdown
+      return;
+    }
+    // Don't run bots-only matches: if all humans left during the countdown,
+    // fall back to lobby (room stays unlocked) so the next human finds the
+    // bots waiting instead of a locked room.
+    if (!this.hasHuman()) {
+      console.log(`[room ${this.roomId}] aborting match start (no humans left)`);
+      this.state.phase = 'lobby';
+      this.broadcastLobby();
       return;
     }
     this.matchRunning = true;
