@@ -293,12 +293,15 @@ export class BotSupervisor {
 
   private rebalance(): void {
     try {
-      // 1) Bots leave private rooms (lobby phase only — never disrupt countdown).
+      // 1) Bots leave private rooms (lobby phase only — never disrupt countdown),
+      // and rooms stuck at the podium (safety net; rooms normally reset
+      // themselves to the lobby after the podium).
       for (const bot of this.bots) {
         const rid = bot.roomId;
         if (!rid) continue;
         const room = activeRooms.get(rid);
-        if (room?.isPrivateRoom && room.state.phase === 'lobby') {
+        if (!room) continue;
+        if ((room.isPrivateRoom && room.state.phase === 'lobby') || room.state.phase === 'podium') {
           void bot.relocateToPublic(); // leave; loop rejoins via joinOrCreate
         }
       }

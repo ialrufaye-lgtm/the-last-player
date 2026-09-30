@@ -3,7 +3,7 @@ import { useGame } from "../game/useGame";
 import { STR } from "../game/strings";
 import { Avatar } from "../components/bits";
 
-const MIN_PLAYERS = 10;
+const FALLBACK_MIN_PLAYERS = 10;
 
 export default function LobbyScreen() {
   const { lobby, players, myId, isHost, send, aliveCount } = useGame();
@@ -11,6 +11,7 @@ export default function LobbyScreen() {
 
   const code = lobby?.code ?? "…";
   const canStart = lobby?.canStart ?? false;
+  const minPlayers = lobby?.minPlayers ?? FALLBACK_MIN_PLAYERS;
   const sorted = [...players].sort((a, b) => {
     if (a.id === myId) return -1;
     if (b.id === myId) return 1;
@@ -74,7 +75,7 @@ export default function LobbyScreen() {
               {STR.startBtn}
             </button>
             {!canStart ? (
-              <p className="hint">{STR.startHint(MIN_PLAYERS)}</p>
+              <p className="hint">{STR.startHint(minPlayers)}</p>
             ) : (
               <p className="hint ok">
                 {players.length} {STR.playersInRoom} — جاهزون للانطلاق!

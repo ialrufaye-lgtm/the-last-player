@@ -24,6 +24,7 @@ export interface LobbyMsg {
   players: { id: string; name: string }[];
   count: number;
   canStart: boolean;
+  minPlayers?: number;
 }
 
 export interface RoundStartMsg {

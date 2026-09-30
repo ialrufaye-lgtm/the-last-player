@@ -325,6 +325,28 @@ export class LastPlayerRoom extends Room<GameState> {
       console.log(`[room ${this.roomId}] winner: ${winner.name}`);
     }
     this.matchRunning = false;
+    // Return to the lobby after the podium so the room (and its bots)
+    // become joinable again instead of staying locked in 'podium' forever.
+    this.clock.setTimeout(() => {
+      if (this.state.phase !== 'podium') return;
+      for (const [id, p] of [...this.state.players]) {
+        if (!p.connected) {
+          this.state.players.delete(id);
+          this.botIds.delete(id);
+          this.spam.delete(id);
+        } else {
+          p.alive = true;
+          p.score = 0;
+          p.isHost = false;
+        }
+      }
+      this.promoteHost();
+      this.state.phase = 'lobby';
+      this.unlock();
+      this.syncAliveCount();
+      this.broadcastLobby();
+      console.log(`[room ${this.roomId}] back to lobby after podium`);
+    }, 15000);
   }
 
   private async runRound(roundIndex: number, type: string): Promise<void> {
